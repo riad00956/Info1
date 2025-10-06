@@ -1,0 +1,161 @@
+/* Telegram User Information Bot + Web Book
+-------------------------------------------
+Features:
+- /start → Welcome message + share contact button
+- /me → Show Telegram user info in JSON + send JSON file
+- Contact share → Returns JSON with phone_number
+- Also runs a small web page (port 77777) showing bot status
+
+Setup:
+1. npm init -y
+2. npm install telegraf
+3. BOT_TOKEN="<YOUR_TOKEN>" node telegram_user_info_bot.js
+*/
+
+const { Telegraf, Markup } = require('telegraf');
+const fs = require('fs');
+const http = require('http');
+
+// --- Bot Setup ---
+const botToken = process.env.BOT_TOKEN;
+if (!botToken) {
+  console.error('Error: BOT_TOKEN environment variable not set.');
+  process.exit(1);
+}
+
+const bot = new Telegraf(botToken);
+
+// --- Helper to Build User JSON ---
+function buildUserJson(ctx, extra = {}) {
+  const from = ctx.from || {};
+  const chat = ctx.chat || {};
+  const message = ctx.message || {};
+
+  return {
+    timestamp: new Date().toISOString(),
+    user: {
+      id: from.id || null,
+      is_bot: from.is_bot || false,
+      first_name: from.first_name || null,
+      last_name: from.last_name || null,
+      username: from.username || null,
+      language_code: from.language_code || null,
+    },
+    chat: {
+      id: chat.id || null,
+      type: chat.type || null,
+      title: chat.title || null,
+    },
+    message: {
+      message_id: message.message_id || null,
+      date: message.date ? new Date(message.date * 1000).toISOString() : null,
+      text: message.text || null,
+    },
+    extras: extra,
+  };
+}
+
+// --- /start Command ---
+bot.start(async (ctx) => {
+  const name = (ctx.from && (ctx.from.first_name || ctx.from.username)) || 'there';
+  await ctx.reply(`Hello ${name}! I can provide your Telegram user info in JSON.`);
+  await ctx.reply(
+    'Tap the button below to share your contact (phone number) or send /me to get your info now.',
+    Markup.keyboard([[Markup.button.contactRequest('Share contact')]])
+      .resize()
+      .oneTime()
+  );
+});
+
+// --- /help Command ---
+bot.help((ctx) =>
+  ctx.reply('/me - get your user info as JSON\n/start - welcome message and contact button')
+);
+
+// --- /me Command ---
+bot.command('me', async (ctx) => {
+  try {
+    const json = buildUserJson(ctx);
+    const pretty = JSON.stringify(json, null, 2);
+
+    await ctx.replyWithMarkdownV2(
+      'Here is your info in JSON:\n```json\n' + escapeMarkdownV2(pretty) + '\n```'
+    );
+
+    const filename = `user_${json.user.id || 'unknown'}.json`;
+    fs.writeFileSync(filename, pretty);
+    await ctx.replyWithDocument({ source: fs.createReadStream(filename), filename });
+    fs.unlinkSync(filename);
+  } catch (err) {
+    console.error(err);
+    await ctx.reply('Sorry, something went wrong while preparing your JSON.');
+  }
+});
+
+// --- Handle Contact Share ---
+bot.on('contact', async (ctx) => {
+  try {
+    const contact = ctx.message.contact || {};
+    const json = buildUserJson(ctx, { shared_contact: contact });
+    const pretty = JSON.stringify(json, null, 2);
+
+    await ctx.reply('Thanks for sharing your contact. Here is your combined info:');
+    await ctx.replyWithMarkdownV2('```json\n' + escapeMarkdownV2(pretty) + '\n```');
+
+    const filename = `user_${json.user.id || 'unknown'}_with_contact.json`;
+    fs.writeFileSync(filename, pretty);
+    await ctx.replyWithDocument({ source: fs.createReadStream(filename), filename });
+    fs.unlinkSync(filename);
+  } catch (err) {
+    console.error(err);
+    await ctx.reply('Error handling contact.');
+  }
+});
+
+// --- Fallback Message ---
+bot.on('text', (ctx) =>
+  ctx.reply('Send /me to receive your Telegram info in JSON, or press Share contact to include your phone.')
+);
+
+// --- MarkdownV2 Escaper ---
+function escapeMarkdownV2(text) {
+  return text.replace(/[\\_*\[\]()~>#+\-=|{}.!]/g, (m) => '\\' + m);
+}
+
+// --- Launch the Bot ---
+bot.launch()
+  .then(() => console.log('✅ Telegram bot started successfully.'))
+  .catch((err) => console.error('❌ Bot launch failed:', err));
+
+// --- Graceful Stop ---
+process.once('SIGINT', () => bot.stop('SIGINT'));
+process.once('SIGTERM', () => bot.stop('SIGTERM'));
+
+// --- Simple Web Server on Port 77777 ---
+const port = 77777;
+http
+  .createServer((req, res) => {
+    res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+    res.end(`
+      <html>
+        <head>
+          <title>Telegram User Info Bot</title>
+          <style>
+            body { font-family: Arial, sans-serif; background: #f7f7f7; padding: 30px; }
+            h1 { color: #0078d7; }
+            code { background: #eaeaea; padding: 3px 6px; border-radius: 4px; }
+          </style>
+        </head>
+        <body>
+          <h1>Telegram User Info Bot</h1>
+          <p>Status: ✅ Running</p>
+          <p>Port: <code>${port}</code></p>
+          <p>Bot Username: <code>@your_bot_here</code></p>
+          <p>Use /me or share contact in Telegram to test it.</p>
+        </body>
+      </html>
+    `);
+  })
+  .listen(port, () => {
+    console.log(`🌐 Web book running at http://localhost:${port}`);
+  });
